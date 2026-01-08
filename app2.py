@@ -24,15 +24,20 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 
-api_key = os.getenv("OPENAI_API_KEY")
+# ============================================================================
+# [추가됨] LLM 클라이언트 초기화 (ChatGPT & Gemini 지원)
+# Added: OpenAI와 Gemini LLM 클라이언트 지원
+# ============================================================================
 
-if api_key:
-    gpt_client = OpenAI(api_key=api_key)
-else:
-    gpt_client = None  # 키 없으면 GPT 기능 비활성화
-    # 필요하면 여기서 로그만 찍기 (streamlit에 에러 띄우거나)
-    
-GPT_MODEL = "gpt-4.1-mini"  # 또는 "gpt-4.1", "gpt-4o-mini" 등 실제 챗 모델
+# OpenAI (ChatGPT) Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API")
+gpt_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+GPT_MODEL = "gpt-4o-mini"
+
+# Gemini Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+gemini_client = None
+GEMINI_MODEL = "gemini-2.0-flash-exp"
 
 # 페이지 설정 (앱 전체에서 단 1번만!)
 st.set_page_config(page_title="공조기 데이터 처리", layout="wide")
@@ -585,34 +590,48 @@ if calc_power_cost is not None:
         all_df["전력_비용(원)"] = calc_power_cost.values
 
 
-# --- 날짜 범위 선택 (all_df 로드 후 바로) ---
-start_date = all_df["datetime"].min().date()
-end_date   = all_df["datetime"].max().date()
+# ============================================================================
+# [수정됨] Energy 데이터 처리 (Empty DataFrame 체크 추가)
+# Modified: Energy 데이터가 비어있을 경우 처리 건너뛰기
+# ============================================================================
 
-전체날짜범위 = st.date_input(
-    "📅 분석할 날짜 범위 선택",
-    (start_date, end_date),
-    key="전체날짜"
-)
-시작 = pd.to_datetime(전체날짜범위[0])
-종료 = pd.to_datetime(전체날짜범위[1]) + pd.Timedelta(days=1)
+# Energy 데이터가 있을 때만 처리
+if 'ENERGY_DATA_AVAILABLE' in locals() and ENERGY_DATA_AVAILABLE:
+    # --- 날짜 범위 선택 (all_df 로드 후 바로) ---
+    start_date = all_df["datetime"].min().date()
+    end_date   = all_df["datetime"].max().date()
 
-# 이 구간에 맞게 필터링된 df
-all_df_range = all_df[
-    (all_df["datetime"] >= 시작) &
-    (all_df["datetime"] <  종료)
-].copy()
+    전체날짜범위 = st.date_input(
+        "📅 분석할 날짜 범위 선택",
+        (start_date, end_date),
+        key="전체날짜"
+    )
+    시작 = pd.to_datetime(전체날짜범위[0])
+    종료 = pd.to_datetime(전체날짜범위[1]) + pd.Timedelta(days=1)
 
-# --- 공조기별 요약 (이제 기간 적용) ---
-top_summary_df = make_top_summary(all_df_range)
-st.markdown("### 📊 공조기별 에너지 사용량/비용 요약")
-st.dataframe(top_summary_df, use_container_width=True)
+    # 이 구간에 맞게 필터링된 df
+    all_df_range = all_df[
+        (all_df["datetime"] >= 시작) &
+        (all_df["datetime"] <  종료)
+    ].copy()
 
-공조기목록 = sorted(
-    set(df_final_all["공조기"].dropna().unique())
-    | set(all_df["공조기"].dropna().unique())
-)
-항목목록 = get_items_from_final(all_df)
+    # --- 공조기별 요약 (이제 기간 적용) ---
+    top_summary_df = make_top_summary(all_df_range)
+    st.markdown("### 📊 공조기별 에너지 사용량/비용 요약")
+    st.dataframe(top_summary_df, use_container_width=True)
+
+    공조기목록 = sorted(
+        set(df_final_all["공조기"].dropna().unique())
+        | set(all_df["공조기"].dropna().unique())
+    )
+    항목목록 = get_items_from_final(all_df)
+else:
+    # Energy 데이터가 없을 때의 기본값 설정
+    st.info("💡 Energy 데이터가 없습니다. Sensor 데이터만 사용 가능합니다.")
+    공조기목록 = sorted(set(df_final_all["공조기"].dropna().unique())) if not df_final_all.empty and "공조기" in df_final_all.columns else []
+    항목목록 = []
+    시작 = pd.to_datetime('2025-01-01')
+    종료 = pd.to_datetime('2025-12-31')
 
 AHU_RAT_LIMITS = {
     "AHU01": [17.9, 25.1], "AHU02": [17.9, 25.1], "AHU03": [17.9, 25.1], "AHU04": [17.9, 25.1], "AHU05": [17.9, 25.1],
