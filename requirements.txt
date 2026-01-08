@@ -1,0 +1,6 @@
+# Required database dependencies
+psycopg2-binary>=2.9.0
+
+# Note: ahu_query_lib is in ../ahu-backend-server
+# Add to PYTHONPATH: export PYTHONPATH=/Users/putra/ahu-backend-server:$PYTHONPATH
+# Or run: pip install -e ../ahu-backend-server (may need to fix setup.py first)
