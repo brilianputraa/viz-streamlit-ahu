@@ -125,6 +125,9 @@ def load_ahu_detail(
             # Drop rows with null values
             df_long = df_long.dropna(subset=['값'])
 
+            # Convert '값' column to numeric type
+            df_long['값'] = pd.to_numeric(df_long['값'], errors='coerce')
+
             # Rename columns to match expected format
             df_long['공조기'] = df_long['ahu_id']
             df_long['datetime'] = pd.to_datetime(df_long['timestamp']).dt.tz_localize(None)
