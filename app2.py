@@ -1038,11 +1038,15 @@ with 탭2:
     # ========================================================================
 
     # ✅ final_analysis parquet 기반 데이터만 사용
-    df_ahu_final = df_final_all[
-        (df_final_all["공조기"] == 선택공조기)
-        & (df_final_all["datetime"] >= 시작)
-        & (df_final_all["datetime"] < 종료)
-    ].copy()
+    # [수정됨] Empty DataFrame 체크 추가
+    if not df_final_all.empty and "공조기" in df_final_all.columns and "datetime" in df_final_all.columns:
+        df_ahu_final = df_final_all[
+            (df_final_all["공조기"] == 선택공조기)
+            & (df_final_all["datetime"] >= 시작)
+            & (df_final_all["datetime"] < 종료)
+        ].copy()
+    else:
+        df_ahu_final = pd.DataFrame()
 
     if df_ahu_final.empty:
         st.warning("해당 기간에 데이터가 없습니다.")
@@ -1061,11 +1065,15 @@ with 탭2:
     oa_daily["연도"] = oa_daily["날짜"].dt.year
 
     # 1) AHU 일일 총비용/총kWh 계산 (선택 기간 + 선택 공조기)
-    df_sel = all_df[
-        (all_df["공조기"] == 선택공조기) &
-        (all_df["datetime"] >= 시작) &
-        (all_df["datetime"] <  종료)
-    ].copy()
+    # [수정됨] Empty DataFrame 체크 추가
+    if not all_df.empty and "공조기" in all_df.columns and "datetime" in all_df.columns:
+        df_sel = all_df[
+            (all_df["공조기"] == 선택공조기) &
+            (all_df["datetime"] >= 시작) &
+            (all_df["datetime"] <  종료)
+        ].copy()
+    else:
+        df_sel = pd.DataFrame()
 
     if df_sel.empty:
         st.info("선택한 공조기의 해당 기간 데이터가 없습니다.")
@@ -1112,10 +1120,14 @@ with 탭2:
     with c4:
         metric = st.selectbox("비교 지표", ["총비용(원)","총kWh"])
     with c5:
-        year_min = int(all_df["datetime"].dt.year.min())
-        year_max = int(all_df["datetime"].dt.year.max())
-        years = list(range(year_min, year_max+1))
-        선택연도 = st.multiselect("비교 연도", years, default=[y for y in range(2021, 2026) if year_min<=y<=year_max])
+        # [수정됨] Empty DataFrame 체크 추가
+        if not all_df.empty and "datetime" in all_df.columns:
+            year_min = int(all_df["datetime"].dt.year.min())
+            year_max = int(all_df["datetime"].dt.year.max())
+            years = list(range(year_min, year_max+1))
+        else:
+            years = [2025]
+        선택연도 = st.multiselect("비교 연도", years, default=[y for y in range(2021, 2026) if y in years])
     with c6:
         방법 = st.radio("선정 방식", ["가까운 1일(거리 최소)","허용 오차 내 평균"], horizontal=True)
 
