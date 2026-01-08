@@ -154,8 +154,12 @@ if df_final_all is None or df_final_all.empty:
 # 로그인 기능, 자동 rerun 기능 등 기타 코드... (이 부분은 변경하지 않음)
 #====================================================================================
 
+# Platform-independent FINAL_DIR path (from loader.py)
+FINAL_DIR = os.getenv("AHU_RESULT_BASE", r"C:\Users\User\Desktop\ahu_app_results")
+FINAL_DIR = os.path.join(FINAL_DIR, "final_results")
 
-FINAL_DIR = r"C:\Users\User\Desktop\ahu_app_results\final_results"
+# Create directory if it doesn't exist
+os.makedirs(FINAL_DIR, exist_ok=True)
 
 files = glob.glob(os.path.join(FINAL_DIR, "final_analysis_*.parquet"))
 
