@@ -123,68 +123,84 @@ if reload_event.is_set():
 st.header("📂 데이터 로드")
 
 # ============================================================================
-# [수정됨] 초기 데이터 로딩 (Parquet 우선, 데이터 없으면 Database 자동 전환)
+# [수정됨] 데이터 소스 선택 (Parquet/Database 모드 직접 선택)
 # Original: Parquet 파일만 직접 로드
-# Modified: Parquet 먼저 시도 후, 데이터가 없으면 Database 모드로 자동 전환
+# Modified: 사용자가 Parquet 또는 Database 모드를 직접 선택
 # ============================================================================
-def load_initial_data():
-    """
-    Load initial data with smart fallback:
-    1. Try parquet files first
-    2. If empty, try database mode automatically
-    Returns: (df_final_all, df_oa_daily, df_oa_all, data_source_used)
-    """
-    # Try parquet mode first
-    try:
+
+# First-time mode selection (shown before data loading)
+if "data_source_mode" not in st.session_state:
+    st.subheader("데이터 소스 선택")
+    st.info("💡 데이터를 불러올 소스를 선택해주세요.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("📁 Parquet Files", use_container_width=True):
+            st.session_state["data_source_mode"] = "parquet"
+            st.rerun()
+
+    with col2:
+        if st.button("🗄️ Database", use_container_width=True):
+            # Check if ahu_query_lib is available
+            try:
+                import ahu_query_lib
+                st.session_state["data_source_mode"] = "database"
+                st.rerun()
+            except ImportError:
+                st.error("❌ ahu_query_lib가 설치되지 않았습니다.")
+                st.code("pip install -e /Users/putra/ahu-backend-server")
+
+    st.stop()
+
+# Load data based on selected mode
+if "initial_data_loaded" not in st.session_state:
+    selected_mode = st.session_state.get("data_source_mode", "parquet")
+
+    with st.spinner(f"🔄 {selected_mode.upper()} 모드로 데이터 로드 중..."):
+        try:
+            if selected_mode == "parquet":
+                # Load from Parquet files
+                df_final_all = load_final_results()
+                from loader import load_oa_daily
+                df_oa_daily = load_oa_daily()
+                df_oa_all = load_oa_results()
+
+                if df_final_all.empty and df_oa_daily.empty and df_oa_all.empty:
+                    st.warning("⚠️ Parquet 데이터가 없습니다.")
+                    st.info("💡 다른 모드를 선택하려면 세션을 다시 시작하세요.")
+            else:
+                # Load from Database
+                import ahu_query_lib as aql
+                df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
+                df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
+                df_oa_all = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=False)
+
+            st.session_state["initial_data_loaded"] = True
+            st.session_state["data_source_used"] = selected_mode
+            st.success(f"✅ 데이터 로드 완료 ({selected_mode.upper()} 모드)")
+
+        except Exception as e:
+            st.error(f"❌ 데이터 로드 실패: {e}")
+            import traceback
+            st.error(traceback.format_exc())
+            st.info("💡 다른 모드를 선택하려면 세션을 다시 시작하세요.")
+            st.stop()
+else:
+    # Data already loaded in session
+    data_source = st.session_state.get("data_source_used", "parquet")
+    st.success(f"✅ 세션 데이터 사용 ({data_source.upper()} 모드)")
+
+    # Load data into variables (from session state or reload)
+    if data_source == "parquet":
         df_final_all = load_final_results()
         from loader import load_oa_daily
         df_oa_daily = load_oa_daily()
         df_oa_all = load_oa_results()
-
-        if not df_final_all.empty or not df_oa_daily.empty or not df_oa_all.empty:
-            return df_final_all, df_oa_daily, df_oa_all, "parquet"
-    except Exception as e:
-        st.warning(f"Parquet 로드 실패: {e}")
-
-    # Parquet empty or failed, try database mode
-    st.info("📂 Parquet 데이터가 없습니다. Database 모드를 시도합니다...")
-    try:
-        import ahu_query_lib as aql
+    else:
         df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
         df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
         df_oa_all = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=False)
-
-        if not df_final_all.empty or not df_oa_daily.empty or not df_oa_all.empty:
-            st.success("✅ Database 모드로 데이터 로드 성공!")
-            return df_final_all, df_oa_daily, df_oa_all, "database"
-        else:
-            st.error("❌ Database에도 데이터가 없습니다.")
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "none"
-    except Exception as e:
-        st.error(f"❌ Database 로드도 실패: {e}")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "none"
-
-# Load initial data with smart fallback
-if "initial_data_loaded" not in st.session_state:
-    with st.spinner("🔄 데이터 로드 중..."):
-        df_final_all, df_oa_daily, df_oa_all, data_source = load_initial_data()
-        st.session_state["initial_data_loaded"] = True
-        st.session_state["data_source_used"] = data_source
-
-    if data_source == "none":
-        st.error("데이터를 불러오지 못했습니다.")
-        st.info("💡 해결 방법:")
-        st.info("   1. Parquet 파일이 있는지 확인")
-        st.info("   2. 또는 Database 모드를 사용 (사이드바에서 'Database' 선택)")
-        st.stop()
-    else:
-        st.success(f"✅ 데이터 로드 완료 (출처: {data_source.upper()} 모드)")
-        if data_source == "database":
-            st.info("💡 Database 모드가 기본으로 설정되었습니다. 사이드바에서 모드를 변경할 수 있습니다.")
-else:
-    # Data already loaded in session
-    st.success("✅ 세션 데이터 사용")
-    data_source = st.session_state.get("data_source_used", "parquet")
     
 #====================================================================================
 # 로그인 기능, 자동 rerun 기능 등 기타 코드... (이 부분은 변경하지 않음)
@@ -278,23 +294,26 @@ if mode == DataAccessMode.DATABASE and st.sidebar.button("🔄 DB에서 데이�
 
 # 여기서부터는 all_df와 외기df를 사용합니다.
 all_df = df_final_all.copy()
-외기df_daily  = df_oa_daily.copy() 
+외기df_daily  = df_oa_daily.copy()
 외기df_hourly = df_oa_all.copy()
 
 # all_df = df_final_all.copy() 바로 아래에 추가
 # "AHU-07", "AHU7", "AHU007", "AHU07H" 등 변형을 모두 "AHU07" 또는 "AHU07H"로 정규화
-all_df["공조기"] = (
-    all_df["공조기"]
-      .astype(str)
-      .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
-)
+# [수정됨] Empty DataFrame 체크 추가 (Database mode에서 energy 데이터가 비어있을 경우 대응)
+if not all_df.empty and "공조기" in all_df.columns:
+    all_df["공조기"] = (
+        all_df["공조기"]
+          .astype(str)
+          .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
+    )
 
 # 요약 스냅샷도 동일 키로 맞추기 (df_final_all도 같은 규칙으로)
-df_final_all["공조기"] = (
-    df_final_all["공조기"]
-      .astype(str)
-      .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
-)
+if not df_final_all.empty and "공조기" in df_final_all.columns:
+    df_final_all["공조기"] = (
+        df_final_all["공조기"]
+          .astype(str)
+          .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
+    )
 
 
 # final_analysis.parquet으로부터 데이터 추출
