@@ -794,18 +794,26 @@ with 탭2:
 
 
     # 2) 공조기 선택 (탭 안쪽, 날짜 밑)
-    공조기목록 = sorted(
-    set(df_final_all["공조기"].dropna().unique())
-    | set(all_df["공조기"].dropna().unique())
-    )
+    # [수정됨] Empty DataFrame 체크 추가
+    ahu_set = set()
+    if not df_final_all.empty and "공조기" in df_final_all.columns:
+        ahu_set.update(df_final_all["공조기"].dropna().unique())
+    if not all_df.empty and "공조기" in all_df.columns:
+        ahu_set.update(all_df["공조기"].dropna().unique())
+
+    공조기목록 = sorted(ahu_set) if ahu_set else ["AHU01"]
     선택공조기 = st.selectbox("📌 분석할 공조기 선택", 공조기목록, index=0, key="선택공조기_탭")
 
     # 3) 선택된 공조기 데이터 필터링
-    df_ahu = all_df[
-        (all_df["공조기"] == 선택공조기) &
-        (all_df["datetime"] >= 시작) & 
-        (all_df["datetime"] < 종료)
-    ].copy()
+    # [수정됨] Empty DataFrame 체크 추가
+    if not all_df.empty and "공조기" in all_df.columns and "datetime" in all_df.columns:
+        df_ahu = all_df[
+            (all_df["공조기"] == 선택공조기) &
+            (all_df["datetime"] >= 시작) &
+            (all_df["datetime"] < 종료)
+        ].copy()
+    else:
+        df_ahu = pd.DataFrame()
 
     if df_ahu.empty:
         st.error("해당 공조기의 데이터가 없습니다.")
@@ -1345,12 +1353,17 @@ with 탭2:
 
     # 5) 장치별 전기사용량
     for ahu in [선택공조기]:
-        # all_df를 기반으로 필터링
-        df_filt = all_df[
-            (all_df["공조기"] == ahu)
-            & (all_df["datetime"] >= 시작)
-            & (all_df["datetime"] < 종료)
-        ].copy()
+        # [수정됨] Empty DataFrame 체크 추가
+        if not all_df.empty and "공조기" in all_df.columns and "datetime" in all_df.columns:
+            # all_df를 기반으로 필터링
+            df_filt = all_df[
+                (all_df["공조기"] == ahu)
+                & (all_df["datetime"] >= 시작)
+                & (all_df["datetime"] < 종료)
+            ].copy()
+        else:
+            df_filt = pd.DataFrame()
+
         if df_filt.empty:
             continue
             
