@@ -7,6 +7,7 @@ import streamlit as st
 from enum import Enum
 from typing import Literal, Optional
 import pandas as pd
+import psycopg2
 
 # Import existing parquet loader functions
 from loader import (
@@ -15,6 +16,7 @@ from loader import (
     load_oa_results as load_parquet_oa_results,
     load_oa_daily as load_parquet_oa_daily
 )
+from db_config import get_database_connection_config
 
 # Enum for data access modes
 class DataAccessMode(Enum):
@@ -87,19 +89,48 @@ def load_ahu_detail(
         end_date: Optional end date filter
 
     Returns:
-        DataFrame with detailed sensor readings
+        DataFrame with detailed sensor readings in long format:
+        [datetime, 공조기, 항목명, 값]
     """
     if mode == DataAccessMode.PARQUET:
         return load_parquet_ahu_detail(ahu_name)
     elif mode == DataAccessMode.DATABASE:
         try:
             import ahu_query_lib as aql
-            return aql.fetch_sensor_data(
+            # Fetch from staging table via ahu_query_lib
+            df = aql.fetch_sensor_data(
                 ahu_id=ahu_name,
                 start_date=start_date or "2021-01-01",
                 end_date=end_date or "2025-12-31",
                 aggregate="raw"
             )
+
+            if df.empty:
+                return pd.DataFrame(columns=['datetime', '공조기', '항목명', '값'])
+
+            # Transform to long format expected by visualization
+            # Columns from ahu_query_lib: timestamp, ahu_id, CCV, HCV, SFST, etc.
+            id_vars = ['timestamp', 'ahu_id']
+            # Find value columns (exclude timestamp, ahu_id, outdoor_temperature, outdoor_humidity)
+            value_cols = [col for col in df.columns
+                         if col not in ['timestamp', 'ahu_id', 'outdoor_temperature', 'outdoor_humidity']]
+
+            df_long = df.melt(
+                id_vars=id_vars,
+                value_vars=value_cols,
+                var_name='항목명',
+                value_name='값'
+            )
+
+            # Drop rows with null values
+            df_long = df_long.dropna(subset=['값'])
+
+            # Rename columns to match expected format
+            df_long['공조기'] = df_long['ahu_id']
+            df_long['datetime'] = pd.to_datetime(df_long['timestamp']).dt.tz_localize(None)
+
+            return df_long[['datetime', '공조기', '항목명', '값']]
+
         except Exception as e:
             st.error(f"Database error loading AHU detail: {e}")
             return pd.DataFrame()
@@ -124,7 +155,9 @@ def load_oa_data(
         end_date: Optional end date filter
 
     Returns:
-        DataFrame with outdoor temperature and humidity
+        DataFrame with outdoor temperature and humidity.
+        Parquet mode: [datetime, 외기온도, 외기습도]
+        Database mode: [datetime, 외기온도, 외기습도]
     """
     if mode == DataAccessMode.PARQUET:
         if daily:
@@ -133,17 +166,76 @@ def load_oa_data(
             return load_parquet_oa_results()
     elif mode == DataAccessMode.DATABASE:
         try:
-            import ahu_query_lib as aql
-            # Use AHU01's outdoor sensor (same for all AHUs)
-            return aql.fetch_sensor_data(
-                ahu_id="AHU01",
-                start_date=start_date or "2021-01-01",
-                end_date=end_date or "2025-12-31",
-                parameters=["OA_T", "OA_H"],
-                aggregate="daily" if daily else "raw"
-            )
+            # Query outdoor_weather table directly
+            config = get_database_connection_config()
+            conn = psycopg2.connect(**config)
+
+            if daily:
+                # Get daily averages
+                query = '''
+                    SELECT
+                        DATE_TRUNC('day', timestamp)::date as date,
+                        AVG(outdoor_temperature) as outdoor_temperature,
+                        AVG(outdoor_humidity) as outdoor_humidity
+                    FROM ahu_data.outdoor_weather
+                    WHERE timestamp IS NOT NULL
+                '''
+
+                params = []
+                if start_date:
+                    query += " AND timestamp >= %s"
+                    params.append(start_date)
+                if end_date:
+                    query += " AND timestamp <= %s"
+                    params.append(end_date)
+
+                query += " GROUP BY DATE_TRUNC('day', timestamp)::date ORDER BY date"
+
+                df = pd.read_sql(query, conn, params=params)
+
+                if not df.empty:
+                    df['datetime'] = pd.to_datetime(df['date'])
+                    df = df.drop(columns=['date'])
+
+            else:
+                # Get raw data
+                query = '''
+                    SELECT timestamp, outdoor_temperature, outdoor_humidity
+                    FROM ahu_data.outdoor_weather
+                    WHERE timestamp IS NOT NULL
+                '''
+
+                params = []
+                if start_date:
+                    query += " AND timestamp >= %s"
+                    params.append(start_date)
+                if end_date:
+                    query += " AND timestamp <= %s"
+                    params.append(end_date)
+
+                query += " ORDER BY timestamp"
+
+                df = pd.read_sql(query, conn, params=params)
+                if not df.empty:
+                    df['datetime'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+
+            conn.close()
+
+            if df.empty:
+                return pd.DataFrame(columns=['datetime', '외기온도', '외기습도'])
+
+            # Rename columns to Korean names expected by visualization
+            df = df.rename(columns={
+                'outdoor_temperature': '외기온도',
+                'outdoor_humidity': '외기습도'
+            })
+
+            return df[['datetime', '외기온도', '외기습도']]
+
         except Exception as e:
             st.error(f"Database error loading OA data: {e}")
+            import traceback
+            st.error(traceback.format_exc())
             return pd.DataFrame()
     else:
         raise ValueError(f"Invalid mode: {mode}")
