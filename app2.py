@@ -722,6 +722,31 @@ def build_gpt_context(ahu, start_dt, end_dt, daily_df, baseline_df, k_sigma, hig
 
 with 탭2:
 
+    # ============================================================================
+    # [수정됨] Energy 데이터 체크 (탭 시작 부분)
+    # Modified: Energy 데이터가 없으면 메시지 표시 후 탭 종료
+    # ============================================================================
+    if not ('ENERGY_DATA_AVAILABLE' in locals() and ENERGY_DATA_AVAILABLE):
+        st.warning("⚠️ **Energy 데이터가 없습니다**")
+        st.info("""
+        💡 **Energy 데이터를 사용하려면:**
+
+        1. **Parquet 모드**: `history` 폴더에 파quet 파일이 있는지 확인하세요
+        2. **Database 모드**: `energy_readings` 테이블에 데이터를 로드하세요 (ETL 필요)
+
+        🔧 **ETL 실행 방법:**
+        ```sql
+        INSERT INTO ahu_data.energy_readings (timestamp, ahu_id, metric_name, value, unit)
+        SELECT timestamp, ahu_id, 'energy_kwh', SUM(값), 'kWh'
+        FROM ahu_data.ahu_readings_staging
+        WHERE 항목명 IN ('CCV', 'HCV')
+        GROUP BY timestamp, ahu_id;
+        ```
+        """)
+        st.success("✅ **Sensor 데이터는 정상 작동합니다!**")
+        st.info("💡 Sensor 데이터 분석은 다른 탭을 이용해주세요.")
+        st.stop()
+
     # ─────────────────────────────────────────────────────────
     # 🤖 GPT 인사이트 패널 (탭2의 맨 위로 이동!)
     with st.sidebar:
