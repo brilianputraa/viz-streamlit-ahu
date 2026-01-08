@@ -1,19 +1,27 @@
+# ============================================================================
+# Standard Library Imports
+# ============================================================================
+import os
+import re
+import glob
+import time
+import hashlib
+import bcrypt
+import threading
+import itertools
+from datetime import datetime, timedelta
+
+# ============================================================================
+# Third-party Imports
+# ============================================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import threading
 import plotly.graph_objects as go
-import hashlib
-from datetime import datetime
-import os, re, glob, time, itertools
-import bcrypt
-from datetime import datetime, timedelta
+from openai import OpenAI  # pip install openai>=1.40
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-# ---- GPT 준비 ----
-import os
-from openai import OpenAI  # pip install openai>=1.40
 
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -130,27 +138,52 @@ st.header("📂 데이터 로드")
 
 # First-time mode selection (shown before data loading)
 if "data_source_mode" not in st.session_state:
-    st.subheader("데이터 소스 선택")
-    st.info("💡 데이터를 불러올 소스를 선택해주세요.")
+    st.markdown("---")
+    st.markdown("### 🎯 데이터 소스 선택")
+    st.markdown("분석할 데이터 소스를 선택해주세요.")
 
+    # Modern card-style selection
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("📁 Parquet Files", use_container_width=True):
+        st.markdown("""
+        <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; border: 2px solid #cbd5e0;">
+            <h3 style="color: #2d3748; margin-bottom: 10px;">📁 Parquet Files</h3>
+            <p style="color: #718096; font-size: 14px; margin-bottom: 15px;">
+                로컬 Parquet 파일에서 데이터 로드
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Parquet 모드 선택", key="select_parquet", use_container_width=True, type="secondary"):
             st.session_state["data_source_mode"] = "parquet"
             st.rerun()
 
     with col2:
-        if st.button("🗄️ Database", use_container_width=True):
-            # Check if ahu_query_lib is available
-            try:
-                import ahu_query_lib
+        st.markdown("""
+        <div style="padding: 20px; border-radius: 10px; background-color: #ebf8ff; border: 2px solid #4299e1;">
+            <h3 style="color: #2c5282; margin-bottom: 10px;">🗄️ Database</h3>
+            <p style="color: #4a5568; font-size: 14px; margin-bottom: 15px;">
+                PostgreSQL 데이터베이스에서 실시간 데이터 로드
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Check if ahu_query_lib is available
+        db_available = True
+        try:
+            import ahu_query_lib
+        except ImportError:
+            db_available = False
+
+        if st.button("Database 모드 선택", key="select_database", use_container_width=True, type="primary" if db_available else "secondary"):
+            if db_available:
                 st.session_state["data_source_mode"] = "database"
                 st.rerun()
-            except ImportError:
+            else:
                 st.error("❌ ahu_query_lib가 설치되지 않았습니다.")
-                st.code("pip install -e /Users/putra/ahu-backend-server")
+                st.code("pip install -e /Users/putra/ahu-backend-server", language="bash")
 
+    st.markdown("---")
     st.stop()
 
 # Load data based on selected mode
@@ -444,11 +477,23 @@ def make_top_summary(base_df: pd.DataFrame, raw: bool = False) -> pd.DataFrame:
 # ✅ 세션 업데이트
 st.session_state['uploaded_df'] = all_df
 
-all_df["연도"] = all_df["datetime"].dt.year
-all_df["절기"] = all_df["datetime"].apply(절기_분류)
+# ============================================================================
+# [수정됨] Empty DataFrame 체크 추가 (Database mode에서 energy 데이터가 비어있을 경우 대응)
+# Modified: Database mode에서 energy 데이터가 비어있을 경우 처리 건너뛰기
+# ============================================================================
+# Energy 데이터가 비어있으면 처리 건너뛰기 (Database mode ETL 필요)
+if all_df.empty or "datetime" not in all_df.columns:
+    st.warning("⚠️ Energy 데이터가 비어있습니다. energy_readings 테이블에 데이터가 없습니다.")
+    st.info("💡 Sensor 데이터 (Detail view)는 정상 작동합니다. Energy 데이터는 ETL이 필요합니다.")
+    st.info("💡 데이터를 확인하려면 아래로 스크롤하세요.")
+else:
+    # Energy 데이터가 있으면 연도/절기 컬럼 추가
+    all_df["연도"] = all_df["datetime"].dt.year
+    all_df["절기"] = all_df["datetime"].apply(절기_분류)
 
-import re
-import numpy as np
+    # Energy 데이터가 있을 때만 아래 처리 실행
+    ENERGY_DATA_AVAILABLE = True
+
 
 # 1) 코일(냉수/스팀) 별칭 정의: 두 번째 표처럼 AC_/PC_/DH_가 붙어도 같은 코일로 취급
 COIL_ALIASES = {
