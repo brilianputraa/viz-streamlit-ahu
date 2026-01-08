@@ -306,17 +306,20 @@ if mode == DataAccessMode.DATABASE and st.sidebar.button("🔄 DB에서 데이�
 
             all_df = df_final_all.copy()
 
-            # Normalize AHU names
-            all_df["공조기"] = (
-                all_df["공조기"]
-                  .astype(str)
-                  .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
-            )
-            df_final_all["공조기"] = (
-                df_final_all["공조기"]
-                  .astype(str)
-                  .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
-            )
+            # [수정됨] Empty DataFrame 체크 추가
+            # Normalize AHU names (only if DataFrame has the column)
+            if not all_df.empty and "공조기" in all_df.columns:
+                all_df["공조기"] = (
+                    all_df["공조기"]
+                      .astype(str)
+                      .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
+                )
+            if not df_final_all.empty and "공조기" in df_final_all.columns:
+                df_final_all["공조기"] = (
+                    df_final_all["공조기"]
+                      .astype(str)
+                      .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
+                )
 
             st.success(f"✅ DB 데이터 로드 완료: {len(df_final_all)}건 (energy), {len(외기df_daily)}건 (OA daily), {len(외기df_hourly)}건 (OA hourly)")
             st.sidebar.success("✅ Database data loaded")
