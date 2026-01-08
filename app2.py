@@ -53,7 +53,10 @@ except ImportError:
 
 WATCH_DIR = HISTORY_DIR
 
-# Import data_adapter for unified data access (parquet/database modes)
+# ============================================================================
+# [추가됨] data_adapter 임포트 (Parquet/Database 통합 데이터 접근 레이어)
+# Added: data_adapter 모듈을 통해 Parquet와 Database 모드 지원
+# ============================================================================
 try:
     from .data_adapter import DataAccessMode, load_final_results as load_adapted_final_results, load_ahu_detail as load_adapted_ahu_detail, load_oa_data as load_adapted_oa_data
 except ImportError:
@@ -120,7 +123,9 @@ if reload_event.is_set():
 st.header("📂 데이터 로드")
 
 # ============================================================================
-# 초기 데이터 로딩 (Parquet 먼저 시도, 비어있으면 Database 자동 시도)
+# [수정됨] 초기 데이터 로딩 (Parquet 우선, 데이터 없으면 Database 자동 전환)
+# Original: Parquet 파일만 직접 로드
+# Modified: Parquet 먼저 시도 후, 데이터가 없으면 Database 모드로 자동 전환
 # ============================================================================
 def load_initial_data():
     """
@@ -188,7 +193,8 @@ else:
 st.title("📊 공조기 분석 시스템")
 
 # ============================================================================
-# 데이터 소스 선택 (Database vs Parquet)
+# [추가됨] 데이터 소스 선택 (Database vs Parquet)
+# Added: 사이드바에서 Parquet/Database 모드 선택 기능
 # ============================================================================
 st.sidebar.markdown("---")
 
@@ -231,7 +237,8 @@ else:
 st.sidebar.markdown("---")
 
 # ============================================================================
-# 데이터 소스에 따른 데이터 로드
+# [수정됨] 데이터 소스에 따른 데이터 로드 (Parquet/Database 모드 지원)
+# Modified: data_adapter를 통해 선택된 모드로 데이터 로드
 # ============================================================================
 # Note: Database mode의 경우 energy 데이터는 비어있을 수 있습니다
 # (energy_readings 테이블이 비어있음). Sensor 데이터는 정상 작동합니다.
