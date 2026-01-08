@@ -71,9 +71,28 @@ WATCH_DIR = HISTORY_DIR
 # Added: data_adapter 모듈을 통해 Parquet와 Database 모드 지원
 # ============================================================================
 try:
-    from .data_adapter import DataAccessMode, load_final_results as load_adapted_final_results, load_ahu_detail as load_adapted_ahu_detail, load_oa_data as load_adapted_oa_data
+    from .data_adapter import (
+        DataAccessMode,
+        load_final_results as load_adapted_final_results,
+        load_ahu_detail as load_adapted_ahu_detail,
+        load_oa_data as load_adapted_oa_data,
+        ensure_ahu_query_lib
+    )
 except ImportError:
-    from data_adapter import DataAccessMode, load_final_results as load_adapted_final_results, load_ahu_detail as load_adapted_ahu_detail, load_oa_data as load_adapted_oa_data
+    from data_adapter import (
+        DataAccessMode,
+        load_final_results as load_adapted_final_results,
+        load_ahu_detail as load_adapted_ahu_detail,
+        load_oa_data as load_adapted_oa_data,
+        ensure_ahu_query_lib
+    )
+
+# [수정됨] DB 모드 로더 라우팅 + ahu_query_lib 자동 경로 탐색
+# Modified: ahu-backend-server 경로 자동 감지 및 DB 모드에서 data_adapter 사용
+def load_ahu_detail_by_mode(ahu_name: str, mode: DataAccessMode) -> pd.DataFrame:
+    if mode == DataAccessMode.DATABASE:
+        return load_adapted_ahu_detail(ahu_name, mode=mode)
+    return load_ahu_detail(ahu_name)
 
 # 파일 해시
 def _list_csvs(folder: str):
@@ -174,11 +193,7 @@ if "data_source_mode" not in st.session_state:
         """, unsafe_allow_html=True)
 
         # Check if ahu_query_lib is available
-        db_available = True
-        try:
-            import ahu_query_lib
-        except ImportError:
-            db_available = False
+        db_available = ensure_ahu_query_lib() is not None
 
         if st.button("Database 모드 선택", key="select_database", use_container_width=True, type="primary" if db_available else "secondary"):
             if db_available:
@@ -186,7 +201,7 @@ if "data_source_mode" not in st.session_state:
                 st.rerun()
             else:
                 st.error("❌ ahu_query_lib가 설치되지 않았습니다.")
-                st.code("pip install -e /Users/putra/ahu-backend-server", language="bash")
+                st.code("export PYTHONPATH=/path/to/ahu-backend-server:$PYTHONPATH", language="bash")
 
     st.markdown("---")
     st.stop()
@@ -209,10 +224,18 @@ if "initial_data_loaded" not in st.session_state:
                     st.info("💡 다른 모드를 선택하려면 세션을 다시 시작하세요.")
             else:
                 # Load from Database
-                import ahu_query_lib as aql
                 df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
                 df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
                 df_oa_all = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=False)
+
+                # [수정됨] None 반환 대비 (ahu_query_lib에서 None 리턴 시 오류 방지)
+                # Modified: None -> empty DataFrame 변환
+                if df_final_all is None:
+                    df_final_all = pd.DataFrame()
+                if df_oa_daily is None:
+                    df_oa_daily = pd.DataFrame()
+                if df_oa_all is None:
+                    df_oa_all = pd.DataFrame()
 
             st.session_state["initial_data_loaded"] = True
             st.session_state["data_source_used"] = selected_mode
@@ -271,7 +294,9 @@ mode = DataAccessMode.PARQUET if data_source_mode == "Parquet Files" else DataAc
 # Display current mode status
 if mode == DataAccessMode.DATABASE:
     try:
-        import ahu_query_lib as aql
+        aql = ensure_ahu_query_lib()
+        if not aql:
+            raise ImportError("ahu_query_lib not available")
         if current_data_source == "database":
             st.sidebar.success("✅ Database mode (auto-detected)")
         else:
@@ -279,7 +304,7 @@ if mode == DataAccessMode.DATABASE:
         st.sidebar.caption(f"ahu_query_lib v{aql.__version__}")
     except ImportError:
         st.sidebar.error("❌ ahu_query_lib not installed")
-        st.sidebar.caption("Run: pip install ahu_query_lib")
+        st.sidebar.caption("Run: export PYTHONPATH=/path/to/ahu-backend-server:$PYTHONPATH")
         # Fallback to parquet mode if library not available
         mode = DataAccessMode.PARQUET
 else:
@@ -320,6 +345,15 @@ if mode == DataAccessMode.DATABASE and st.sidebar.button("🔄 DB에서 데이�
                       .astype(str)
                       .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
                 )
+
+            # [수정됨] None 반환 대비 (ahu_query_lib에서 None 리턴 시 오류 방지)
+            # Modified: None -> empty DataFrame 변환
+            if df_final_all is None:
+                df_final_all = pd.DataFrame()
+            if 외기df_daily is None:
+                외기df_daily = pd.DataFrame()
+            if 외기df_hourly is None:
+                외기df_hourly = pd.DataFrame()
 
             st.success(f"✅ DB 데이터 로드 완료: {len(df_final_all)}건 (energy), {len(외기df_daily)}건 (OA daily), {len(외기df_hourly)}건 (OA hourly)")
             st.sidebar.success("✅ Database data loaded")
@@ -732,15 +766,39 @@ with 탭2:
         💡 **Energy 데이터를 사용하려면:**
 
         1. **Parquet 모드**: `history` 폴더에 파quet 파일이 있는지 확인하세요
-        2. **Database 모드**: `energy_readings` 테이블에 데이터를 로드하세요 (ETL 필요)
 
-        🔧 **ETL 실행 방법:**
+        2. **Database 모드**: Energy 데이터 자동 로드
+           - **Airflow Webserver** 실행 중인지 확인하세요
+           - Smart file monitoring이 자동으로 `ahu_readings_staging` → `energy_readings` ETL 실행
+           - Airflow DAG: `etl_sensor_to_energy`가 주기적으로 실행됩니다
+
+        🔧 **Airflow 상태 확인:**
+        - Webserver: `http://localhost:8080`
+        - CLI: `airflow dags list`
+        - Logs: `airflow logs etl_sensor_to_energy --last 1`
+
+        🔧 **수동 ETL (Airflow가 실행되지 않을 때):**
         ```sql
+        -- ahu_monitoring DB에서 실행
         INSERT INTO ahu_data.energy_readings (timestamp, ahu_id, metric_name, value, unit)
-        SELECT timestamp, ahu_id, 'energy_kwh', SUM(값), 'kWh'
+        SELECT
+            timestamp,
+            ahu_id,
+            CASE
+                WHEN 항목명 IN ('CCV', 'PC_CCV') THEN 'ccv_cold_water_kwh'
+                WHEN 항목명 IN ('HCV', 'DH_HCV') THEN 'hcv_steam_kwh'
+                WHEN 항목명 = 'SFST' THEN 'ac_sf_electricity_kwh'
+                ELSE 'other'
+            END as metric_name,
+            SUM(값) as value,
+            'kWh' as unit
         FROM ahu_data.ahu_readings_staging
-        WHERE 항목명 IN ('CCV', 'HCV')
-        GROUP BY timestamp, ahu_id;
+        WHERE 항목명 IN ('CCV', 'PC_CCV', 'HCV', 'DH_HCV', 'SFST')
+        GROUP BY timestamp, ahu_id,
+                 CASE WHEN 항목명 IN ('CCV', 'PC_CCV') THEN 'ccv_cold_water_kwh'
+                      WHEN 항목명 IN ('HCV', 'DH_HCV') THEN 'hcv_steam_kwh'
+                      WHEN 항목명 = 'SFST' THEN 'ac_sf_electricity_kwh'
+                      ELSE 'other' END;
         ```
         """)
         st.success("✅ **Sensor 데이터는 정상 작동합니다!**")
@@ -856,7 +914,7 @@ with 탭2:
     st.caption(f"📘 현재 선택된 공조기 형식: {ahu_형식}")
 
     # 5) 주요 항목 반복 시각화
-    raw = load_ahu_detail(선택공조기)
+    raw = load_ahu_detail_by_mode(선택공조기, mode)
     for 선택항목 in ["CCV", "PC_CCV", "HCV", "DH_HCV", "RAT", "RAH"]:
         if not raw.empty:
             df_selected = raw[raw["항목명"] == 선택항목].copy()
@@ -1749,7 +1807,7 @@ with 탭5:
         show_styled_dataframe(df_summary, name="📊 연도/절기별 요약 통계", show_index=False)
 
         # 🌬 환기온습도 추가 (detail parquet 기반)
-        raw = load_ahu_detail(선택공조기)
+        raw = load_ahu_detail_by_mode(선택공조기, mode)
         if raw is not None and not raw.empty:
             df_vent = raw[
                 (raw["항목명"].isin(["RAT", "RAH"])) &
@@ -1777,7 +1835,7 @@ with 탭5:
     # ---- 월별 평균 개도율(%) 계산 ----
     coil_items = ["CCV", "PC_CCV", "HCV", "DH_HCV"]
 
-    raw = load_ahu_detail(선택공조기)
+    raw = load_ahu_detail_by_mode(선택공조기, mode)
 
     if raw is not None and not raw.empty:
         # 코일 항목 + 기간 필터
@@ -1984,7 +2042,7 @@ with 탭5:
 
 
         # 2) [선택] RAW(detail parquet)에서 '평균 개도율(%)'만 가중평균으로 계산해서 병합
-        raw = load_ahu_detail(선택공조기)  # detail parquet(원시시계열) 있으면 사용
+        raw = load_ahu_detail_by_mode(선택공조기, mode)  # detail parquet(원시시계열) 있으면 사용
         if raw is not None and not raw.empty:
             raw = raw[
                 (raw["항목명"].isin(coil_items))
@@ -2013,7 +2071,7 @@ with 탭5:
 
 
     # 🟩 월별 환기온도/외기온도 평균
-    raw = load_ahu_detail(선택공조기)
+    raw = load_ahu_detail_by_mode(선택공조기, mode)
     if raw is not None and not raw.empty:
         df_rat = raw[raw["항목명"] == "RAT"].copy()
         if not df_rat.empty:

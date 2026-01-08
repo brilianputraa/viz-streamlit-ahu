@@ -3,6 +3,9 @@ Unified data access layer for viz-streamlit-ahu.
 
 Provides abstraction over data sources (parquet files vs database).
 """
+import os
+import sys
+from pathlib import Path
 import streamlit as st
 from enum import Enum
 from typing import Literal, Optional
@@ -17,6 +20,32 @@ from loader import (
     load_oa_daily as load_parquet_oa_daily
 )
 from db_config import get_database_connection_config
+
+# [수정됨] ahu_query_lib 자동 로드 (ahu-backend-server 경로 자동 감지)
+# Modified: PYTHONPATH가 없어도 ahu-backend-server 폴더에서 ahu_query_lib를 찾도록 보완
+def ensure_ahu_query_lib():
+    try:
+        import ahu_query_lib as aql
+        return aql
+    except ImportError:
+        candidates = []
+        env_path = os.getenv("AHU_BACKEND_SERVER_PATH")
+        if env_path:
+            candidates.append(Path(env_path))
+        base_dir = Path(__file__).resolve().parent
+        candidates.append(base_dir.parent / "ahu-backend-server")
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            if (candidate / "ahu_query_lib").is_dir():
+                sys.path.insert(0, str(candidate))
+                try:
+                    import ahu_query_lib as aql
+                    return aql
+                except ImportError:
+                    continue
+        return None
 
 # Enum for data access modes
 class DataAccessMode(Enum):
@@ -51,7 +80,10 @@ def load_final_results(
     elif mode == DataAccessMode.DATABASE:
         # Import here to avoid issues when ahu_query_lib not available
         try:
-            import ahu_query_lib as aql
+            aql = ensure_ahu_query_lib()
+            if not aql:
+                st.error("ahu_query_lib not available. Set PYTHONPATH or AHU_BACKEND_SERVER_PATH.")
+                return pd.DataFrame()
             return aql.fetch_energy_consumption_cost(
                 ahu_id=None,  # All AHUs
                 start_period=start_date or "2021-01-01",
@@ -62,9 +94,6 @@ def load_final_results(
                 include_granular=True,
                 include_korean=True
             )
-        except ImportError:
-            st.error("ahu_query_lib not available. Install with: pip install ahu_query_lib")
-            return pd.DataFrame()
         except Exception as e:
             st.error(f"Database error: {e}")
             return pd.DataFrame()
@@ -96,7 +125,10 @@ def load_ahu_detail(
         return load_parquet_ahu_detail(ahu_name)
     elif mode == DataAccessMode.DATABASE:
         try:
-            import ahu_query_lib as aql
+            aql = ensure_ahu_query_lib()
+            if not aql:
+                st.error("ahu_query_lib not available. Set PYTHONPATH or AHU_BACKEND_SERVER_PATH.")
+                return pd.DataFrame()
             # Fetch from staging table via ahu_query_lib
             df = aql.fetch_sensor_data(
                 ahu_id=ahu_name,
@@ -267,7 +299,9 @@ def get_available_ahu_list(
         ]
     elif mode == DataAccessMode.DATABASE:
         try:
-            import ahu_query_lib as aql
+            aql = ensure_ahu_query_lib()
+            if not aql:
+                return get_available_ahu_list(DataAccessMode.PARQUET)
             metadata = aql.fetch_all_ahu_metadata()
             return sorted(metadata.keys())
         except Exception:
