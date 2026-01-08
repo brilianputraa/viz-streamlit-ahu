@@ -119,57 +119,71 @@ if reload_event.is_set():
 # 📂 데이터 로드
 st.header("📂 데이터 로드")
 
-# --- 데이터 로딩 로직 개선 ---
-progress_bar = st.progress(0, text="파일 분석 준비 중...")
-def update_progress(current, total, file_name):
-    progress_bar.progress(current / total, text=f"📂 파일 분석 중... ({current}/{total}) - {file_name}")
+# ============================================================================
+# 초기 데이터 로딩 (Parquet 먼저 시도, 비어있으면 Database 자동 시도)
+# ============================================================================
+def load_initial_data():
+    """
+    Load initial data with smart fallback:
+    1. Try parquet files first
+    2. If empty, try database mode automatically
+    Returns: (df_final_all, df_oa_daily, df_oa_all, data_source_used)
+    """
+    # Try parquet mode first
+    try:
+        df_final_all = load_final_results()
+        from loader import load_oa_daily
+        df_oa_daily = load_oa_daily()
+        df_oa_all = load_oa_results()
 
-if "데이터로드완료" not in st.session_state or reload_event.is_set():
-    reload_event.clear()
-    with st.spinner("📂 CSV → parquet 업데이트 중..."):
-        df_final_all, df_oa_daily, df_oa_all = update_history_results(progress_callback=update_progress)
-        항목목록 = get_items_from_final(df_final_all)
+        if not df_final_all.empty or not df_oa_daily.empty or not df_oa_all.empty:
+            return df_final_all, df_oa_daily, df_oa_all, "parquet"
+    except Exception as e:
+        st.warning(f"Parquet 로드 실패: {e}")
 
-    st.session_state["데이터로드완료"] = True
-    progress_bar.empty()
-    st.success(f"✅ 집계 데이터 {len(df_final_all)}건, OA(일평균) {len(df_oa_daily)}건, OA(고해상도) {len(df_oa_all)}건 로드 완료")
+    # Parquet empty or failed, try database mode
+    st.info("📂 Parquet 데이터가 없습니다. Database 모드를 시도합니다...")
+    try:
+        import ahu_query_lib as aql
+        df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
+        df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
+        df_oa_all = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=False)
+
+        if not df_final_all.empty or not df_oa_daily.empty or not df_oa_all.empty:
+            st.success("✅ Database 모드로 데이터 로드 성공!")
+            return df_final_all, df_oa_daily, df_oa_all, "database"
+        else:
+            st.error("❌ Database에도 데이터가 없습니다.")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "none"
+    except Exception as e:
+        st.error(f"❌ Database 로드도 실패: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "none"
+
+# Load initial data with smart fallback
+if "initial_data_loaded" not in st.session_state:
+    with st.spinner("🔄 데이터 로드 중..."):
+        df_final_all, df_oa_daily, df_oa_all, data_source = load_initial_data()
+        st.session_state["initial_data_loaded"] = True
+        st.session_state["data_source_used"] = data_source
+
+    if data_source == "none":
+        st.error("데이터를 불러오지 못했습니다.")
+        st.info("💡 해결 방법:")
+        st.info("   1. Parquet 파일이 있는지 확인")
+        st.info("   2. 또는 Database 모드를 사용 (사이드바에서 'Database' 선택)")
+        st.stop()
+    else:
+        st.success(f"✅ 데이터 로드 완료 (출처: {data_source.upper()} 모드)")
+        if data_source == "database":
+            st.info("💡 Database 모드가 기본으로 설정되었습니다. 사이드바에서 모드를 변경할 수 있습니다.")
 else:
-    st.success("✅ 기존 데이터 사용")
-    df_final_all = load_final_results()
-    # ⬇️ daily/시간해상도 둘 다 로드
-    from loader import load_oa_daily
-    df_oa_daily = load_oa_daily()
-    df_oa_all   = load_oa_results()
-    
-#if st.button("데이터 강제 재분석", type="primary"):
- #   st.session_state["데이터로드완료"] = False
-  #  st.toast("🚨 캐시 및 세션 초기화 → 데이터 재분석 시작", icon="🗑️")
-   # st.rerun()
-
-if df_final_all is None or df_final_all.empty:
-    st.error("데이터를 불러오지 못했습니다. history 경로/날짜를 확인하세요.")
-    st.stop()
+    # Data already loaded in session
+    st.success("✅ 세션 데이터 사용")
+    data_source = st.session_state.get("data_source_used", "parquet")
     
 #====================================================================================
 # 로그인 기능, 자동 rerun 기능 등 기타 코드... (이 부분은 변경하지 않음)
 #====================================================================================
-
-# Platform-independent FINAL_DIR path (from loader.py)
-FINAL_DIR = os.getenv("AHU_RESULT_BASE", r"C:\Users\User\Desktop\ahu_app_results")
-FINAL_DIR = os.path.join(FINAL_DIR, "final_results")
-
-# Create directory if it doesn't exist
-os.makedirs(FINAL_DIR, exist_ok=True)
-
-files = glob.glob(os.path.join(FINAL_DIR, "final_analysis_*.parquet"))
-
-dfs = []
-for f in files:
-    df = pd.read_parquet(f)
-    dfs.append(df)
-
-df_final_all = pd.concat(dfs, ignore_index=True)
-
 
 st.title("📊 공조기 분석 시스템")
 
@@ -177,11 +191,18 @@ st.title("📊 공조기 분석 시스템")
 # 데이터 소스 선택 (Database vs Parquet)
 # ============================================================================
 st.sidebar.markdown("---")
+
+# Get current data source from session state
+current_data_source = st.session_state.get("data_source_used", "parquet")
+
+# Set default index based on auto-detected source
+default_index = 1 if current_data_source == "database" else 0
+
 data_source_mode = st.sidebar.radio(
     "🗄️ 데이터 소스",
     options=["Parquet Files", "Database"],
-    index=0,
-    help="Parquet Files (로컬 파일) 또는 Database (실시간 DB) 선택"
+    index=default_index,
+    help=f"현재: {current_data_source.upper()} 모드 (Parquet Files 또는 Database 선택)"
 )
 
 # Convert to DataAccessMode enum
@@ -191,7 +212,10 @@ mode = DataAccessMode.PARQUET if data_source_mode == "Parquet Files" else DataAc
 if mode == DataAccessMode.DATABASE:
     try:
         import ahu_query_lib as aql
-        st.sidebar.success("✅ Database connected")
+        if current_data_source == "database":
+            st.sidebar.success("✅ Database mode (auto-detected)")
+        else:
+            st.sidebar.success("✅ Database connected")
         st.sidebar.caption(f"ahu_query_lib v{aql.__version__}")
     except ImportError:
         st.sidebar.error("❌ ahu_query_lib not installed")
@@ -199,7 +223,10 @@ if mode == DataAccessMode.DATABASE:
         # Fallback to parquet mode if library not available
         mode = DataAccessMode.PARQUET
 else:
-    st.sidebar.info("📁 Using Parquet files")
+    if current_data_source == "parquet":
+        st.sidebar.info("📁 Using Parquet files (auto-detected)")
+    else:
+        st.sidebar.info("📁 Using Parquet files")
 
 st.sidebar.markdown("---")
 
