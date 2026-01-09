@@ -658,8 +658,19 @@ if 'ENERGY_DATA_AVAILABLE' in locals() and ENERGY_DATA_AVAILABLE:
         (start_date, end_date),
         key="전체날짜"
     )
-    시작 = pd.to_datetime(전체날짜범위[0])
-    종료 = pd.to_datetime(전체날짜범위[1]) + pd.Timedelta(days=1)
+    if isinstance(전체날짜범위, (tuple, list)):
+        if len(전체날짜범위) >= 2:
+            시작 = pd.Timestamp(전체날짜범위[0])
+            종료 = pd.Timestamp(전체날짜범위[1]) + pd.Timedelta(days=1)
+        elif len(전체날짜범위) == 1:
+            시작 = pd.Timestamp(전체날짜범위[0])
+            종료 = 시작 + pd.Timedelta(days=1)
+        else:
+            시작 = pd.Timestamp(start_date)
+            종료 = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+    else:
+        시작 = pd.Timestamp(전체날짜범위)
+        종료 = 시작 + pd.Timedelta(days=1)
 
     # 이 구간에 맞게 필터링된 df
     all_df_range = all_df[
