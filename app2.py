@@ -688,8 +688,11 @@ AHU_RAH_LIMITS = {
     "AHU39": [75.1], "AHU45": [70.1]
 }  
 
-# 전체 연도 목록 추출
-연도목록 = sorted(all_df["datetime"].dt.year.unique()) if not all_df.empty else []
+# ============================================================================
+# [수정됨] Empty DataFrame 체크 추가 (연도 목록 추출)
+# Modified: Empty DataFrame일 때 기본값 반환
+# ============================================================================
+연도목록 = sorted(all_df["datetime"].dt.year.unique()) if not all_df.empty and "datetime" in all_df.columns else []
 
 
 
