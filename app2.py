@@ -372,6 +372,21 @@ all_df = df_final_all.copy()
 외기df_daily  = df_oa_daily.copy()
 외기df_hourly = df_oa_all.copy()
 
+# [수정됨] Database mode can return timestamp/date columns instead of datetime; normalize once here.
+def _normalize_datetime_column(df: pd.DataFrame) -> None:
+    if df is None or df.empty or "datetime" in df.columns:
+        return
+    candidate_cols = ["timestamp", "date", "날짜"]
+    for col in candidate_cols:
+        if col in df.columns:
+            dt = pd.to_datetime(df[col], errors="coerce")
+            if getattr(dt.dt, "tz", None) is not None:
+                dt = dt.dt.tz_localize(None)
+            df["datetime"] = dt
+            return
+
+_normalize_datetime_column(all_df)
+
 # all_df = df_final_all.copy() 바로 아래에 추가
 # "AHU-07", "AHU7", "AHU007", "AHU07H" 등 변형을 모두 "AHU07" 또는 "AHU07H"로 정규화
 # [수정됨] Empty DataFrame 체크 추가 (Database mode에서 energy 데이터가 비어있을 경우 대응)
@@ -1412,14 +1427,15 @@ with 탭2:
             st.info("선택한 공조기에 대한 집계 결과가 없습니다.")
         else:
             st.subheader("📊 공조기별 비용 요약표")
-            print(all_df_range[all_df_range["공조기"].isin(["AHU21","AHU22"])].filter(regex="비용"))
+            # [수정됨] Debug print 제거 (empty DataFrame 로그 방지)
             df_cost_fmt = df_cost.copy()
             df_cost_fmt.index = np.arange(1, len(df_cost_fmt) + 1)
             df_cost_fmt.index.name = "No"
 
             money_cols = [c for c in df_cost_fmt.columns if c.endswith("(원)")]
-            df_cost_fmt[money_cols] = df_cost_fmt[money_cols].applymap(
-                lambda x: f"{int(round(x)):,}" if pd.notna(x) else ""
+            # [수정됨] applymap deprecation 대응 (Series.map 사용)
+            df_cost_fmt[money_cols] = df_cost_fmt[money_cols].apply(
+                lambda s: s.map(lambda x: f"{int(round(x)):,}" if pd.notna(x) else "")
             )
 
             컬럼_색상맵 = {
@@ -1599,21 +1615,20 @@ with 탭3:
         + grp["전기_kWh"]
     )
 
-    # 표시용 포맷 (천 단위 콤마 & 비율)
+    # [수정됨] 비율(%) 계산은 숫자 컬럼 상태에서 먼저 수행
     df_display = grp.copy()
+    for col in ["스팀_kWh", "제습용_스팀_kWh", "냉수_kWh", "프리쿨러_냉수_kWh", "전기_kWh"]:
+        ratio_col = col.replace("_kWh", "_비중(%)")
+        df_display[ratio_col] = np.where(
+            df_display["총_kWh"] > 0,
+            df_display[col] / df_display["총_kWh"] * 100,
+            0,
+        ).round(1)
+
+    # 표시용 포맷 (천 단위 콤마 & 원본 보존)
     for col in ["스팀_kWh", "제습용_스팀_kWh", "냉수_kWh", "프리쿨러_냉수_kWh", "전기_kWh", "총_kWh"]:
         df_display[col + "_raw"] = df_display[col]  # 원본 값 보존
         df_display[col] = df_display[col].apply(lambda x: f"{x:,.1f}")
-
-    # 비율(%)
-    for col in ["스팀_kWh", "제습용_스팀_kWh", "냉수_kWh", "프리쿨러_냉수_kWh", "전기_kWh"]:
-        raw_col = col + "_raw"
-        ratio_col = col.replace("_kWh", "_비중(%)")
-        df_display[ratio_col] = np.where(
-            grp["총_kWh"] > 0,
-            grp[raw_col] / grp["총_kWh"] * 100,
-            0,
-        ).round(1)
 
     # 표시용 컬럼만 선택
     cols_order = [

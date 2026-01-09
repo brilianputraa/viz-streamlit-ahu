@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Literal, Optional
 import pandas as pd
 import psycopg2
+import warnings
 
 # Import existing parquet loader functions
 from loader import (
@@ -84,7 +85,7 @@ def load_final_results(
             if not aql:
                 st.error("ahu_query_lib not available. Set PYTHONPATH or AHU_BACKEND_SERVER_PATH.")
                 return pd.DataFrame()
-            return aql.fetch_energy_consumption_cost(
+            df = aql.fetch_energy_consumption_cost(
                 ahu_id=None,  # All AHUs
                 start_period=start_date or "2021-01-01",
                 end_period=end_date or "2025-12-31",
@@ -94,6 +95,16 @@ def load_final_results(
                 include_granular=True,
                 include_korean=True
             )
+            # Normalize period column returned by ahu_query_lib to datetime for app compatibility.
+            if not df.empty and "datetime" not in df.columns and "period" in df.columns:
+                dt = pd.to_datetime(df["period"], errors="coerce")
+                if getattr(dt.dt, "tz", None) is not None:
+                    dt = dt.dt.tz_localize(None)
+                df["datetime"] = dt
+            # Map DB column name to Korean label expected by viz app.
+            if not df.empty and "공조기" not in df.columns and "ahu_id" in df.columns:
+                df = df.rename(columns={"ahu_id": "공조기"})
+            return df
         except Exception as e:
             st.error(f"Database error: {e}")
             return pd.DataFrame()
@@ -226,7 +237,13 @@ def load_oa_data(
 
                 query += " GROUP BY DATE_TRUNC('day', timestamp)::date ORDER BY date"
 
-                df = pd.read_sql(query, conn, params=params)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="pandas only supports SQLAlchemy connectable.*",
+                        category=UserWarning
+                    )
+                    df = pd.read_sql(query, conn, params=params)
 
                 if not df.empty:
                     df['datetime'] = pd.to_datetime(df['date'])
@@ -250,7 +267,13 @@ def load_oa_data(
 
                 query += " ORDER BY timestamp"
 
-                df = pd.read_sql(query, conn, params=params)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="pandas only supports SQLAlchemy connectable.*",
+                        category=UserWarning
+                    )
+                    df = pd.read_sql(query, conn, params=params)
                 if not df.empty:
                     df['datetime'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
 
