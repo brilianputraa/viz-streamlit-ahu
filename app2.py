@@ -30,9 +30,9 @@ from watchdog.events import FileSystemEventHandler
 # ============================================================================
 
 # OpenAI (ChatGPT) Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API")
 gpt_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-GPT_MODEL = "gpt-4o-mini"
+GPT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
 # Gemini Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -49,7 +49,7 @@ try:
                           냉수최대열량, 증기최대열량, PC_CCV_열량, DH_HCV_열량, 항목_열량맵핑,
                           get_최대열량, 단가_딕셔너리, get_단가, get_motor_device_kwh,
                           건식제습형_공조기, 냉각제습형_공조기)
-    from .loader import (HISTORY_DIR, update_history_results, load_final_results, load_detail_results, scan_and_update, load_oa_results, load_ahu_detail, get_items_from_final)
+    from .loader import (HISTORY_DIR, update_history_results, load_final_results, load_detail_results, scan_and_update, load_oa_results, load_oa_daily, load_ahu_detail, get_items_from_final)
     from .viz import (draw_season_year_line, draw_overlay_by_shifted_datetime,
                       show_공조기별_총비용_요약, show_항목별_소모비용, add_band, 평균선추가,
                       BAND_RANGES_RAT, BAND_RANGES_RAH)
@@ -59,10 +59,15 @@ except ImportError:
                         냉수최대열량, 증기최대열량, PC_CCV_열량, DH_HCV_열량, 항목_열량맵핑,
                         get_최대열량, 단가_딕셔너리, get_단가, get_motor_device_kwh,
                         건식제습형_공조기, 냉각제습형_공조기)
-    from loader import (HISTORY_DIR, update_history_results, load_final_results, load_detail_results, scan_and_update, load_oa_results, load_ahu_detail, get_items_from_final)
+    from loader import (HISTORY_DIR, update_history_results, load_final_results, load_detail_results, scan_and_update, load_oa_results, load_oa_daily, load_ahu_detail, get_items_from_final)
     from viz import (draw_season_year_line, draw_overlay_by_shifted_datetime,
                      show_공조기별_총비용_요약, show_항목별_소모비용, add_band, 평균선추가,
                      BAND_RANGES_RAT, BAND_RANGES_RAH)
+
+try:
+    from .app2_loader import load_parquet_data, load_final_results_from_dir
+except ImportError:
+    from app2_loader import load_parquet_data, load_final_results_from_dir
 
 WATCH_DIR = HISTORY_DIR
 
@@ -154,6 +159,11 @@ if reload_event.is_set():
 # 📂 데이터 로드
 st.header("📂 데이터 로드")
 
+# --- 데이터 로딩 로직 개선 ---
+progress_bar = st.progress(0, text="파일 분석 준비 중...")
+def update_progress(current, total, file_name):
+    progress_bar.progress(current / total, text=f"📂 파일 분석 중... ({current}/{total}) - {file_name}")
+
 # ============================================================================
 # [수정됨] 데이터 소스 선택 (Parquet/Database 모드 직접 선택)
 # Original: Parquet 파일만 직접 로드
@@ -207,22 +217,32 @@ if "data_source_mode" not in st.session_state:
     st.stop()
 
 # Load data based on selected mode
-if "initial_data_loaded" not in st.session_state:
-    selected_mode = st.session_state.get("data_source_mode", "parquet")
+selected_mode = st.session_state.get("data_source_mode", "parquet")
 
-    with st.spinner(f"🔄 {selected_mode.upper()} 모드로 데이터 로드 중..."):
-        try:
-            if selected_mode == "parquet":
-                # Load from Parquet files
-                df_final_all = load_final_results()
-                from loader import load_oa_daily
-                df_oa_daily = load_oa_daily()
-                df_oa_all = load_oa_results()
+if selected_mode == "parquet":
+    should_update = "데이터로드완료" not in st.session_state or reload_event.is_set()
+    with st.spinner("📂 CSV → parquet 업데이트 중..." if should_update else "📂 Parquet 데이터 로드 중..."):
+        df_final_all, df_oa_daily, df_oa_all, did_update = load_parquet_data(
+            should_update=should_update,
+            update_fn=lambda: update_history_results(progress_callback=update_progress),
+            final_fn=load_final_results,
+            oa_daily_fn=load_oa_daily,
+            oa_all_fn=load_oa_results,
+        )
 
-                if df_final_all.empty and df_oa_daily.empty and df_oa_all.empty:
-                    st.warning("⚠️ Parquet 데이터가 없습니다.")
-                    st.info("💡 다른 모드를 선택하려면 세션을 다시 시작하세요.")
-            else:
+    if did_update:
+        st.session_state["데이터로드완료"] = True
+        progress_bar.empty()
+        st.success(f"✅ 집계 데이터 {len(df_final_all)}건, OA(일평균) {len(df_oa_daily)}건, OA(고해상도) {len(df_oa_all)}건 로드 완료")
+    else:
+        st.success("✅ 기존 데이터 사용")
+
+    st.session_state["initial_data_loaded"] = True
+    st.session_state["data_source_used"] = "parquet"
+else:
+    if "initial_data_loaded" not in st.session_state or st.session_state.get("data_source_used") != "database":
+        with st.spinner("🔄 DATABASE 모드로 데이터 로드 중..."):
+            try:
                 # Load from Database
                 df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
                 df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
@@ -237,31 +257,31 @@ if "initial_data_loaded" not in st.session_state:
                 if df_oa_all is None:
                     df_oa_all = pd.DataFrame()
 
-            st.session_state["initial_data_loaded"] = True
-            st.session_state["data_source_used"] = selected_mode
-            st.success(f"✅ 데이터 로드 완료 ({selected_mode.upper()} 모드)")
+                st.session_state["initial_data_loaded"] = True
+                st.session_state["data_source_used"] = "database"
+                st.success("✅ 데이터 로드 완료 (DATABASE 모드)")
 
-        except Exception as e:
-            st.error(f"❌ 데이터 로드 실패: {e}")
-            import traceback
-            st.error(traceback.format_exc())
-            st.info("💡 다른 모드를 선택하려면 세션을 다시 시작하세요.")
-            st.stop()
-else:
-    # Data already loaded in session
-    data_source = st.session_state.get("data_source_used", "parquet")
-    st.success(f"✅ 세션 데이터 사용 ({data_source.upper()} 모드)")
-
-    # Load data into variables (from session state or reload)
-    if data_source == "parquet":
-        df_final_all = load_final_results()
-        from loader import load_oa_daily
-        df_oa_daily = load_oa_daily()
-        df_oa_all = load_oa_results()
+            except Exception as e:
+                st.error(f"❌ 데이터 로드 실패: {e}")
+                import traceback
+                st.error(traceback.format_exc())
+                st.info("💡 다른 모드를 선택하려면 세션을 다시 시작하세요.")
+                st.stop()
     else:
+        st.success("✅ 세션 데이터 사용 (DATABASE 모드)")
         df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
         df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
         df_oa_all = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=False)
+
+if selected_mode == "parquet" and (df_final_all is None or df_final_all.empty):
+    st.error("데이터를 불러오지 못했습니다. history 경로/날짜를 확인하세요.")
+    st.stop()
+
+if selected_mode == "parquet":
+    FINAL_DIR = os.getenv("AHU_FINAL_DIR", r"C:\Users\User\Desktop\ahu_app_results\final_results")
+    override_df = load_final_results_from_dir(FINAL_DIR)
+    if not override_df.empty:
+        df_final_all = override_df
     
 #====================================================================================
 # 로그인 기능, 자동 rerun 기능 등 기타 코드... (이 부분은 변경하지 않음)
@@ -274,6 +294,15 @@ st.title("📊 공조기 분석 시스템")
 # Added: 사이드바에서 Parquet/Database 모드 선택 기능
 # ============================================================================
 st.sidebar.markdown("---")
+
+if st.sidebar.button("🧹 Parquet 강제 재분석", key="force_rebuild_parquet"):
+    st.session_state["데이터로드완료"] = False
+    st.session_state["initial_data_loaded"] = False
+    reload_event.set()
+    with st.spinner("Parquet 검증을 위해 다시 생성 중..."):
+        update_history_results(progress_callback=update_progress)
+    st.sidebar.success("✅ Parquet 재분석 완료")
+    st.experimental_rerun()
 
 # Get current data source from session state
 current_data_source = st.session_state.get("data_source_used", "parquet")
