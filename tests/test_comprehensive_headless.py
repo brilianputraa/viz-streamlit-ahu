@@ -7,10 +7,15 @@ the actual Streamlit UI. Tests are organized by component and data source mode.
 import sys
 import os
 from datetime import datetime, timedelta
+from pathlib import Path  # [추가됨] 로컬 경로 자동 감지
 
 # Setup paths
-sys.path.insert(0, '/Users/putra/viz-streamlit-ahu')
-os.environ['PYTHONPATH'] = '/Users/putra/ahu-backend-server'
+# [수정됨] 하드코딩 경로 제거: 현재 체크아웃 위치 기준으로 sys.path 구성
+VIZ_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = VIZ_ROOT.parent
+for p in (str(VIZ_ROOT), str(REPO_ROOT)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 import pytest
 import pandas as pd
@@ -50,8 +55,8 @@ class TestDatabaseConfiguration:
         """Verify default configuration values."""
         config = get_database_connection_config()
         assert config['host'] == 'localhost'
-        assert config['port'] == 5433
-        assert config['database'] == 'ahu_monitoring'
+        assert config['port'] == 6432
+        assert config['database'] == 'ahu_read'
         assert config['user'] == 'postgres'
         assert config['password'] == 'admin'
         print(f"✓ Default config values correct")
@@ -154,9 +159,9 @@ class TestAHUQueryLibIntegration:
         """Test fetch_sensor_data returns data."""
         import ahu_query_lib as aql
         df = aql.fetch_sensor_data(
-            ahu_id='AHU01',
-            start_date='2025-11-20',
-            end_date='2025-11-25',
+            ahu_id='AHU02',
+            start_date='2025-11-23',
+            end_date='2025-11-24',
             limit=5
         )
 
@@ -234,7 +239,7 @@ class TestDataAdapterDatabaseMode:
     def test_02_load_ahu_detail_database(self):
         """Test load_ahu_detail with database mode."""
         df = load_ahu_detail(
-            ahu_name='AHU01',
+            ahu_name='AHU02',
             mode=DataAccessMode.DATABASE,
             start_date='2025-11-23',
             end_date='2025-11-24'
@@ -299,7 +304,7 @@ class TestDataFormatValidation:
         """Verify DB format matches parquet loader output format."""
         # Database mode returns: [datetime, 공조기, 항목명, 값]
         df_db = load_ahu_detail(
-            ahu_name='AHU01',
+            ahu_name='AHU02',
             mode=DataAccessMode.DATABASE,
             start_date='2025-11-23',
             end_date='2025-11-24'
@@ -337,7 +342,7 @@ class TestDataFormatValidation:
     def test_03_ahu_detail_has_valid_items(self):
         """Verify 항목명 contains expected sensor items."""
         df = load_ahu_detail(
-            ahu_name='AHU01',
+            ahu_name='AHU02',
             mode=DataAccessMode.DATABASE,
             start_date='2025-11-23',
             end_date='2025-11-24'
@@ -371,7 +376,8 @@ class TestIntegrationEndToEnd:
         print(f"  Step 1: Found {len(ahu_list)} AHUs")
 
         # Step 2: Load sensor data for first AHU
-        test_ahu = ahu_list[0]
+        # Prefer an AHU that is known to have recent data in staging
+        test_ahu = "AHU02" if "AHU02" in ahu_list else ahu_list[0]
         df_detail = load_ahu_detail(
             ahu_name=test_ahu,
             mode=DataAccessMode.DATABASE,
@@ -432,7 +438,7 @@ class TestIntegrationEndToEnd:
         """Test date range filtering works correctly."""
         # Use a date range that's more likely to have data
         df = load_ahu_detail(
-            ahu_name='AHU01',
+            ahu_name='AHU02',
             mode=DataAccessMode.DATABASE,
             start_date='2025-11-20',  # Wider range
             end_date='2025-11-25'
@@ -497,7 +503,7 @@ def generate_summary_report():
     print(f"   Total rows: {weather_count:,}")
     print(f"   Date range: {weather_range[0]} to {weather_range[1]}")
 
-    # 3. Energy Readings (expected to be empty)
+    # 3. Energy Readings
     cursor.execute('SELECT COUNT(*) FROM ahu_data.energy_readings')
     energy_count = cursor.fetchone()[0]
 

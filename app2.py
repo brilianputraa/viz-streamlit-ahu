@@ -76,7 +76,8 @@ try:
         load_final_results as load_adapted_final_results,
         load_ahu_detail as load_adapted_ahu_detail,
         load_oa_data as load_adapted_oa_data,
-        ensure_ahu_query_lib
+        ensure_ahu_query_lib,
+        get_latest_energy_date,
     )
 except ImportError:
     from data_adapter import (
@@ -84,7 +85,8 @@ except ImportError:
         load_final_results as load_adapted_final_results,
         load_ahu_detail as load_adapted_ahu_detail,
         load_oa_data as load_adapted_oa_data,
-        ensure_ahu_query_lib
+        ensure_ahu_query_lib,
+        get_latest_energy_date,
     )
 
 # [수정됨] DB 모드 로더 라우팅 + ahu_query_lib 자동 경로 탐색
@@ -193,7 +195,7 @@ if "data_source_mode" not in st.session_state:
         """, unsafe_allow_html=True)
 
         # Check if ahu_query_lib is available
-        db_available = ensure_ahu_query_lib() is not None
+        db_available = ensure_ahu_query_lib(import_module=False) is not None
 
         if st.button("Database 모드 선택", key="select_database", use_container_width=True, type="primary" if db_available else "secondary"):
             if db_available:
@@ -223,10 +225,11 @@ if "initial_data_loaded" not in st.session_state:
                     st.warning("⚠️ Parquet 데이터가 없습니다.")
                     st.info("💡 다른 모드를 선택하려면 세션을 다시 시작하세요.")
             else:
-                # Load from Database
-                df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
-                df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
-                df_oa_all = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=False)
+                # [추가됨] Database 모드 최초 진입 시 전체기간 대용량 쿼리 실행을 피함
+                # (DB OOM/recovery 방지). 사이드바에서 기간 지정 후 "DB에서 데이터 다시 로드"로 조회.
+                df_final_all = pd.DataFrame()
+                df_oa_daily = pd.DataFrame()
+                df_oa_all = pd.DataFrame()
 
                 # [수정됨] None 반환 대비 (ahu_query_lib에서 None 리턴 시 오류 방지)
                 # Modified: None -> empty DataFrame 변환
@@ -239,6 +242,10 @@ if "initial_data_loaded" not in st.session_state:
 
             st.session_state["initial_data_loaded"] = True
             st.session_state["data_source_used"] = selected_mode
+            # [추가됨] rerun 시 DB 재조회 방지용 캐시 (session_state)
+            st.session_state["df_final_all"] = df_final_all
+            st.session_state["df_oa_daily"] = df_oa_daily
+            st.session_state["df_oa_all"] = df_oa_all
             st.success(f"✅ 데이터 로드 완료 ({selected_mode.upper()} 모드)")
 
         except Exception as e:
@@ -252,16 +259,10 @@ else:
     data_source = st.session_state.get("data_source_used", "parquet")
     st.success(f"✅ 세션 데이터 사용 ({data_source.upper()} 모드)")
 
-    # Load data into variables (from session state or reload)
-    if data_source == "parquet":
-        df_final_all = load_final_results()
-        from loader import load_oa_daily
-        df_oa_daily = load_oa_daily()
-        df_oa_all = load_oa_results()
-    else:
-        df_final_all = load_adapted_final_results(mode=DataAccessMode.DATABASE)
-        df_oa_daily = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=True)
-        df_oa_all = load_adapted_oa_data(mode=DataAccessMode.DATABASE, daily=False)
+    # [추가됨] rerun 시 session_state 캐시 사용 (DB 연결/쿼리 폭주 방지)
+    df_final_all = st.session_state.get("df_final_all", pd.DataFrame())
+    df_oa_daily = st.session_state.get("df_oa_daily", pd.DataFrame())
+    df_oa_all = st.session_state.get("df_oa_all", pd.DataFrame())
     
 #====================================================================================
 # 로그인 기능, 자동 rerun 기능 등 기타 코드... (이 부분은 변경하지 않음)
@@ -305,7 +306,10 @@ if mode == DataAccessMode.DATABASE:
     except ImportError:
         st.sidebar.error("❌ ahu_query_lib not installed")
         st.sidebar.caption("Run: export PYTHONPATH=/path/to/ahu-backend-server:$PYTHONPATH")
-        # Fallback to parquet mode if library not available
+        mode = DataAccessMode.PARQUET
+    except Exception as e:
+        st.sidebar.error("❌ Database mode unavailable")
+        st.sidebar.caption(str(e))
         mode = DataAccessMode.PARQUET
 else:
     if current_data_source == "parquet":
@@ -321,51 +325,95 @@ st.sidebar.markdown("---")
 # ============================================================================
 # Note: Database mode의 경우 energy 데이터는 비어있을 수 있습니다
 # (energy_readings 테이블이 비어있음). Sensor 데이터는 정상 작동합니다.
-if mode == DataAccessMode.DATABASE and st.sidebar.button("🔄 DB에서 데이터 다시 로드", key="reload_db_data"):
-    with st.spinner("데이터베이스에서 데이터 로드 중..."):
-        try:
-            # Load data using data_adapter
-            df_final_all = load_adapted_final_results(mode=mode)
-            외기df_daily = load_adapted_oa_data(mode=mode, daily=True)
-            외기df_hourly = load_adapted_oa_data(mode=mode, daily=False)
+if mode == DataAccessMode.DATABASE:
+    # [추가됨] DB 조회 기간 선택 + 기간 제한 조회로 recovery/OOM 리스크 감소
+    # [추가됨] DB의 최신 energy_readings 날짜를 기본 종료일로 사용 (오늘 날짜가 아님)
+    latest_energy_date = get_latest_energy_date(mode=DataAccessMode.DATABASE)
+    # [추가됨] DB 최신 날짜 조회 실패 시에만 today로 fallback (일반적으로는 PgBouncer 경유로 정상 조회됨)
+    if latest_energy_date is None:
+        st.sidebar.warning("⚠️ DB에서 최신 날짜를 찾지 못했습니다. 임시로 '오늘' 기준 기본값을 사용합니다.")
+        latest_energy_date = datetime.now().date()
 
-            all_df = df_final_all.copy()
+    # [추가됨] 기본적으로 DB 최신 날짜로 자동 이동 (원하면 끌 수 있음)
+    follow_latest_end = st.sidebar.checkbox(
+        "🔁 최신 날짜 자동 선택 (energy_readings 기준)",
+        value=st.session_state.get("follow_latest_db_end", True),
+        key="follow_latest_db_end",
+        help="켜두면 종료일이 항상 DB의 최신 날짜로 맞춰집니다.",
+    )
 
-            # [수정됨] Empty DataFrame 체크 추가
-            # Normalize AHU names (only if DataFrame has the column)
-            if not all_df.empty and "공조기" in all_df.columns:
-                all_df["공조기"] = (
-                    all_df["공조기"]
-                      .astype(str)
-                      .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
-                )
-            if not df_final_all.empty and "공조기" in df_final_all.columns:
-                df_final_all["공조기"] = (
-                    df_final_all["공조기"]
-                      .astype(str)
-                      .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
-                )
+    # [수정됨] Streamlit 경고 제거: 위젯 key에 대해 session_state로 값을 주입하지 않고 value로만 제어
+    # - "The widget with key ... had its value set via Session State API" 경고 방지
+    default_range = (latest_energy_date - timedelta(days=30), latest_energy_date)
+    if follow_latest_end:
+        db_query_range = st.sidebar.date_input(
+            "📅 DB 조회 기간 (너무 길면 DB가 불안정해질 수 있습니다)",
+            value=default_range,  # [추가됨] 최신 날짜 기준 기본값
+            key="db_query_range_preview",  # [추가됨] 미리보기 전용 키
+            disabled=True,  # [추가됨] 최신 날짜 고정 모드에서는 직접 변경 불가
+            help="종료일은 DB 최신 날짜로 고정됩니다. 변경하려면 위의 체크를 끄세요.",
+        )
+    else:
+        db_query_range = st.sidebar.date_input(
+            "📅 DB 조회 기간 (너무 길면 DB가 불안정해질 수 있습니다)",
+            value=st.session_state.get("db_query_range_manual", default_range),
+            key="db_query_range_manual",
+            help="기간이 너무 길면 DB가 불안정해질 수 있습니다. (권장: 최근 30~90일)",
+        )
 
-            # [수정됨] None 반환 대비 (ahu_query_lib에서 None 리턴 시 오류 방지)
-            # Modified: None -> empty DataFrame 변환
-            if df_final_all is None:
-                df_final_all = pd.DataFrame()
-            if 외기df_daily is None:
-                외기df_daily = pd.DataFrame()
-            if 외기df_hourly is None:
-                외기df_hourly = pd.DataFrame()
+    if st.sidebar.button("🔄 DB에서 데이터 다시 로드", key="reload_db_data"):
+        with st.spinner("데이터베이스에서 데이터 로드 중..."):
+            try:
+                start_date = None
+                end_date = None
+                if isinstance(db_query_range, tuple) and len(db_query_range) == 2:
+                    start_date = str(db_query_range[0])
+                    end_date = str(db_query_range[1])
 
-            st.success(f"✅ DB 데이터 로드 완료: {len(df_final_all)}건 (energy), {len(외기df_daily)}건 (OA daily), {len(외기df_hourly)}건 (OA hourly)")
-            st.sidebar.success("✅ Database data loaded")
+                # [추가됨] 너무 긴 기간은 느릴 수 있음을 안내
+                if start_date and end_date:
+                    try:
+                        days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+                        if days > 366:
+                            st.sidebar.warning("⚠️ 1년+ 기간 조회는 시간이 오래 걸릴 수 있습니다. (월 단위로 분할 조회)")
+                    except Exception:
+                        pass
 
-            if df_final_all.empty:
-                st.warning("⚠️ Energy 데이터가 비어있습니다. energy_readings 테이블에 데이터가 없습니다.")
-                st.info("💡 Sensor 데이터 (Detail view)는 정상 작동합니다. Energy 데이터는 ETL이 필요합니다.")
+                # Load data using data_adapter (bounded by date range to avoid OOM/recovery)
+                df_final_all = load_adapted_final_results(mode=mode, start_date=start_date, end_date=end_date)
+                df_oa_daily = load_adapted_oa_data(mode=mode, daily=True, start_date=start_date, end_date=end_date)
+                df_oa_all = load_adapted_oa_data(mode=mode, daily=False, start_date=start_date, end_date=end_date)
 
-        except Exception as e:
-            st.error(f"❌ DB 데이터 로드 실패: {e}")
-            import traceback
-            st.error(traceback.format_exc())
+                # Normalize AHU names (only if DataFrame has the column)
+                if df_final_all is not None and not df_final_all.empty and "공조기" in df_final_all.columns:
+                    df_final_all["공조기"] = (
+                        df_final_all["공조기"]
+                        .astype(str)
+                        .str.replace(r"AHU-?(\d+)(H)?", lambda m: f"AHU{int(m.group(1)):02d}" + (m.group(2) or ""), regex=True)
+                    )
+
+                # None 반환 대비 (ahu_query_lib에서 None 리턴 시 오류 방지)
+                if df_final_all is None:
+                    df_final_all = pd.DataFrame()
+                if df_oa_daily is None:
+                    df_oa_daily = pd.DataFrame()
+                if df_oa_all is None:
+                    df_oa_all = pd.DataFrame()
+
+                st.session_state["df_final_all"] = df_final_all
+                st.session_state["df_oa_daily"] = df_oa_daily
+                st.session_state["df_oa_all"] = df_oa_all
+
+                st.success(f"✅ DB 데이터 로드 완료: {len(df_final_all)}건 (energy), {len(df_oa_daily)}건 (OA daily), {len(df_oa_all)}건 (OA hourly)")
+                st.sidebar.success("✅ Database data loaded")
+
+                if df_final_all.empty:
+                    st.warning("⚠️ 선택한 기간에 Energy 데이터가 없습니다.")
+
+            except Exception as e:
+                st.error(f"❌ DB 데이터 로드 실패: {e}")
+                import traceback
+                st.error(traceback.format_exc())
 
 # 여기서부터는 all_df와 외기df를 사용합니다.
 all_df = df_final_all.copy()
@@ -538,11 +586,16 @@ st.session_state['uploaded_df'] = all_df
 # [수정됨] Empty DataFrame 체크 추가 (Database mode에서 energy 데이터가 비어있을 경우 대응)
 # Modified: Database mode에서 energy 데이터가 비어있을 경우 처리 건너뛰기
 # ============================================================================
-# Energy 데이터가 비어있으면 처리 건너뛰기 (Database mode ETL 필요)
+# Energy 데이터가 비어있으면 처리 건너뛰기
 if all_df.empty or "datetime" not in all_df.columns:
-    st.warning("⚠️ Energy 데이터가 비어있습니다. energy_readings 테이블에 데이터가 없습니다.")
-    st.info("💡 Sensor 데이터 (Detail view)는 정상 작동합니다. Energy 데이터는 ETL이 필요합니다.")
-    st.info("💡 데이터를 확인하려면 아래로 스크롤하세요.")
+    # [추가됨] Database 모드에서 최초 진입 시에는 의도적으로 energy 데이터를 자동 로드하지 않음
+    if mode == DataAccessMode.DATABASE:
+        st.warning("⚠️ Energy 데이터를 아직 로드하지 않았습니다.")
+        st.info("💡 사이드바에서 기간을 선택하고 'DB에서 데이터 다시 로드'를 눌러주세요.")
+        st.info("💡 Sensor 데이터 (Detail view)는 정상 작동합니다.")
+    else:
+        st.warning("⚠️ Energy 데이터가 비어있습니다.")
+        st.info("💡 Sensor 데이터 (Detail view)는 정상 작동합니다.")
 else:
     # Energy 데이터가 있으면 연도/절기 컬럼 추가
     all_df["연도"] = all_df["datetime"].dt.year

@@ -7,7 +7,7 @@ def test_get_database_config():
     assert "host" in config
     assert "port" in config
     assert "database" in config
-    assert config["port"] == 5433
+    assert config["port"] == 6432
 
 def test_pgb_vars_override_db_vars():
     """Test that PGB_* vars take precedence over DB_* vars."""
@@ -103,7 +103,8 @@ def test_single_pgb_var_triggers_pgb_mode():
         config = get_database_connection_config()
 
         # Should use PGB_PORT + other PGB_* defaults
-        assert config["host"] == "pgbouncer"  # Default PGB_HOST
+        expected_default_host = "pgbouncer" if os.path.exists("/.dockerenv") else "localhost"
+        assert config["host"] == expected_default_host  # Default PGB_HOST
         assert config["port"] == 7000  # From PGB_PORT
         assert config["database"] == "ahu_read"  # Default PGB_NAME
     finally:
@@ -165,6 +166,7 @@ def test_db_vars_without_pgb_vars():
         os.environ["DB_HOST"] = "db_host"
         os.environ["DB_PORT"] = "5432"
         os.environ["DB_NAME"] = "my_database"
+        os.environ["STREAMLIT_PREFER_PGBOUNCER"] = "false"  # [추가됨] DB_* precedence test 용
 
         config = get_database_connection_config()
 

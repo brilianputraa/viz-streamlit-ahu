@@ -24,3 +24,11 @@ ENV/
 *.csv
 !tests/
 *.pyc
+
+# [추가됨] Local smoke logs (do not commit)
+.streamlit_smoke.log
+
+# [추가됨] One-off local test scripts (kept outside pytest suite)
+test_app2_components_thorough.py
+test_app2_final.py
+test_components.py
